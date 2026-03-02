@@ -1,20 +1,23 @@
 import { Module } from '@nestjs/common';
 import { CustomersModule } from './modules/customers/customers.module';
 import { MonitoringModule } from './modules/monitoring/monitoring.module';
-import { NotificationsModule } from './modules/notifications/notifications.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { UsageModule } from './modules/usage/usage.module';
 import { PaymentsModule } from './modules/payments/payments.module';
-import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import databaseConfig from './config/database.config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { envValidationSchema } from './config/env.validation';
 import { BullModule } from '@nestjs/bullmq';
+import { SchedulerModule } from './modules/Scheduler/scheduler.module';
+import { NotificationModule } from './modules/notifications/notifications.module';
+import { SubscriptionModule } from './modules/subscriptions/subscriptions.module';
 
 const ENV = process.env.NODE_ENV;
+const SCHEDULER_ENABLED = process.env.SCHEDULER_ENABLED === 'true';
+
 @Module({
-  imports: [CustomersModule, SubscriptionsModule, PaymentsModule, UsageModule, BillingModule, NotificationsModule, MonitoringModule,
+  imports: [CustomersModule, SubscriptionModule, PaymentsModule, UsageModule, BillingModule, NotificationModule, MonitoringModule,
 
     ConfigModule.forRoot({
       isGlobal: true,
@@ -22,8 +25,8 @@ const ENV = process.env.NODE_ENV;
       load: [databaseConfig],
       validationSchema: envValidationSchema,
       validationOptions: {
-        allowUnknown: true, 
-        abortEarly: true,   
+        allowUnknown: true,
+        abortEarly: true,
       },
     }),
 
@@ -45,6 +48,7 @@ const ENV = process.env.NODE_ENV;
       }),
     }),
 
+    ...(SCHEDULER_ENABLED ? [SchedulerModule] : []),
   ],
   controllers: [],
   providers: [],
