@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { RequiresIdempotencyGuard, RequiresIdempotencyKey } from 'src/common/guards/Idempotency.guard';
-import { IdempotencyService } from './idempotency.server';
+import { IdempotencyService } from './idempotency.service';
 import { IdempotencyInterceptor } from 'src/common/interceptors/Idempotency.interceptor';
 import { Idempotency } from './entity/idempotency.entity';
 

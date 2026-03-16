@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { Subscription } from 'rxjs';
 import { Invoice } from './entity/invoice.entity';
 import { InvoiceService } from './invoice.service';
+import { Subscription } from '../subscriptions/entity/subscription.entity';
 
 
 

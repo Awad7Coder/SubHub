@@ -23,7 +23,12 @@ import { Payment } from './entity/payment.entity';
 import { BillingService } from '../billing/billing.service';
 import { InvoiceService } from '../invoice/invoice.service';
 import { InvoiceStatus } from '../invoice/invoice.enum';
+import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiHeader } from '@nestjs/swagger';
+import { PaymentThrottle } from '../../common/decorators/throttle.decorator';
 
+
+
+@ApiTags('payments')
 @Controller('payments')
 export class PaymentsController {
   constructor(
@@ -32,7 +37,7 @@ export class PaymentsController {
 
     private readonly billingService: BillingService,
     private readonly invoiceService: InvoiceService,
-  ) {}
+  ) { }
 
   // ── GET /api/payments/invoice/:invoiceId ────────────────────────────────
 
@@ -42,6 +47,9 @@ export class PaymentsController {
    * "this card was declined 3 times before succeeding."
    */
   @Get('invoice/:invoiceId')
+  @ApiOperation({ summary: 'Get payment attempts for an invoice', description: 'Returns all attempts including failures — useful for debugging declined payments.' })
+  @ApiParam({ name: 'invoiceId', type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Payment attempt list' })
   async getByInvoice(
     @Param('invoiceId', ParseUUIDPipe) invoiceId: string,
   ) {
@@ -65,6 +73,11 @@ export class PaymentsController {
    * Default: 20 per page, page 1. Configurable via query params.
    */
   @Get('customer/:customerId')
+  @ApiOperation({ summary: 'Get payment history for a customer' })
+  @ApiParam({ name: 'customerId', type: String, format: 'uuid' })
+  @ApiQuery({ name: 'page', required: false, type: Number, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, type: Number, example: 20 })
+  @ApiResponse({ status: 200, description: 'Paginated payment history' })
   async getByCustomer(
     @Param('customerId', ParseUUIDPipe) customerId: string,
     @Query() query: GetPaymentHistoryQueryDto,
@@ -120,6 +133,23 @@ export class PaymentsController {
    * Idempotency protection is mandatory on ALL charge-triggering endpoints.
    */
   @Post('retry/:invoiceId')
+  @PaymentThrottle()
+  @ApiOperation({
+    summary: 'Retry a failed payment',
+    description: `
+        Manually triggers a charge retry for an OPEN invoice.
+
+        Returns **202 Accepted** — the charge is queued, not yet processed.
+        Poll \`GET /invoices/:id\` to check if status changed to \`paid\`.
+
+        **Rate limited:** 5 requests per minute per IP.
+    `,
+  })
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  @ApiParam({ name: 'invoiceId', type: String, format: 'uuid' })
+  @ApiResponse({ status: 202, description: 'Retry queued' })
+  @ApiResponse({ status: 422, description: 'Invoice is not in OPEN state — cannot retry' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded — 5 retries per minute' })
   @HttpCode(HttpStatus.ACCEPTED)
   @UseInterceptors(IdempotencyInterceptor)
   @UseGuards(RequiresIdempotencyGuard)
@@ -174,4 +204,5 @@ export class PaymentsController {
       status: 'queued',
     };
   }
+
 }

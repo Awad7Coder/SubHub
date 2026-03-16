@@ -34,6 +34,7 @@ export const VALID_SUBSCRIPTION_TRANSITIONS: Record<
   [SubscriptionStatus.PENDING]: [
     SubscriptionStatus.ACTIVE,      // first payment succeeded
     SubscriptionStatus.CANCELLED,   // cancelled before first payment
+    SubscriptionStatus.PAST_DUE,    // <--- ADD THIS: first payment failed all retries
   ],
   [SubscriptionStatus.ACTIVE]: [
     SubscriptionStatus.PAST_DUE,    // payment failed

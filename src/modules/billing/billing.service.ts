@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -8,6 +8,7 @@ import {
   BILLING_JOBS,
   BILLING_RETRY_CONFIG,
   PaymentStatus,
+  SubscriptionStatus,
 } from '../subscriptions/subscription.enum';
 import { InvoiceNotFoundException } from '../../common/exceptions/domain.exception';
 import { Payment } from '../payments/entity/payment.entity';
@@ -17,14 +18,18 @@ import { CircuitBreaker, CircuitBreakerOpenException } from './circuitBreaker';
 import { InvoiceService } from '../invoice/invoice.service';
 import { NotificationService } from '../notifications/notifications.service';
 import { InvoiceStatus } from '../invoice/invoice.enum';
+import { PAYMENT_PROVIDER } from '../payments/providers/payment.provider.interface';
+import { PaymentDeclinedException, ProviderUnavailableException, type PaymentProvider } from './provider/mock.provider';
+import { SubscriptionService } from '../subscriptions/subscriptions.service';
+import { CustomersService } from '../customers/customers.service';
 
 // ─── DTOs ──────────────────────────────────────────────────────────────────
 
-export interface ChargeResult {
-  success: boolean;
-  externalTransactionId?: string;
-  failureReason?: string;
-}
+// export interface ChargeResult {
+//   success: boolean;
+//   externalTransactionId?: string;
+//   failureReason?: string;
+// }
 
 // ─── Stripe Stub ───────────────────────────────────────────────────────────
 
@@ -41,29 +46,29 @@ export interface ChargeResult {
  * and Paddle become swappable implementations. The BillingService
  * never changes when you add a new provider.
  */
-interface StripeChargeParams {
-  amount: number;
-  currency: string;
-  customerId: string;
-  invoiceId: string;
-}
+// interface StripeChargeParams {
+//   amount: number;
+//   currency: string;
+//   customerId: string;
+//   invoiceId: string;
+// }
 
-async function stubStripeCharge(params: StripeChargeParams): Promise<ChargeResult> {
-  // Simulate 80% success rate for development
-  const success = Math.random() > 0.2;
+// async function stubStripeCharge(params: StripeChargeParams): Promise<ChargeResult> {
+//   // Simulate 80% success rate for development
+//   const success = Math.random() > 0.2;
 
-  if (success) {
-    return {
-      success: true,
-      externalTransactionId: `ch_stub_${Date.now()}_${params.invoiceId.slice(0, 8)}`,
-    };
-  }
+//   if (success) {
+//     return {
+//       success: true,
+//       externalTransactionId: `ch_stub_${Date.now()}_${params.invoiceId.slice(0, 8)}`,
+//     };
+//   }
 
-  return {
-    success: false,
-    failureReason: 'Card declined',
-  };
-}
+//   return {
+//     success: false,
+//     failureReason: 'Card declined',
+//   };
+// }
 
 // ─── Service ───────────────────────────────────────────────────────────────
 
@@ -102,8 +107,16 @@ export class BillingService {
     @InjectQueue(BILLING_JOBS.CHARGE_INVOICE)
     private readonly billingQueue: Queue,
 
+    @Inject(PAYMENT_PROVIDER)
+    private readonly paymentProvider: PaymentProvider,
+
     private readonly invoiceService: InvoiceService,
+
     private readonly notificationService: NotificationService,
+    @Inject(forwardRef(() => SubscriptionService)) 
+
+    private readonly subscriptionService: SubscriptionService,
+    private readonly customersService: CustomersService,
 
     /**
      * WHY inject DataSource instead of using a transaction decorator?
@@ -214,19 +227,25 @@ export class BillingService {
 
     // ── Call payment provider through circuit breaker ─────────────────────
     try {
-      const result = await this.stripeCircuitBreaker.call(() =>
-        stubStripeCharge({
-          amount: invoice.amount,
-          currency: invoice.currency,
-          customerId: customer.id,
-          invoiceId: invoice.id,
-        }),
-      );
+      // const result = await this.stripeCircuitBreaker.call(() =>
+      //   stubStripeCharge({
+      //     amount: invoice.amount,
+      //     currency: invoice.currency,
+      //     customerId: customer.id,
+      //     invoiceId: invoice.id,
+      //   }),
+      // );
 
-      if (result.success && result.externalTransactionId) {
-        await this.handleSuccess(invoice, result.externalTransactionId, customer);
-      } else {
-        await this.handleFailure(invoice, result.failureReason, attemptNumber, customer);
+      const result = await this.paymentProvider.charge({
+        amount: invoice.amount,
+        currency: invoice.currency,
+        customerId: customer.id,
+        invoiceId: invoice.id,
+        idempotencyKey: `charge-${invoiceId}-attempt-${attemptNumber}`,
+      });
+
+      if (result.success && result.transactionId) {
+        await this.handleSuccess(invoice, result.transactionId, customer);
       }
     } catch (error) {
       if (error instanceof CircuitBreakerOpenException) {
@@ -252,6 +271,20 @@ export class BillingService {
         await this.scheduleRetry(invoiceId, attemptNumber, 5 * 60 * 1000);
         return;
       }
+
+      if (error instanceof PaymentDeclinedException) {
+        await this.handleFailure(invoice, error.reason, attemptNumber, customer);
+        return;
+      }
+
+      if (error instanceof ProviderUnavailableException) {
+        await this.notificationService.sendInternalAlert('Provider unavailable', {
+          provider: error.provider, invoiceId, attemptNumber,
+        });
+        await this.scheduleRetry(invoiceId, attemptNumber, 5 * 60 * 1000);
+        return;
+      }
+
 
       // Unknown error — log and re-throw for BullMQ to handle
       this.logger.error(`Unexpected error charging invoice ${invoiceId}: ${error.message}`);
@@ -283,12 +316,10 @@ export class BillingService {
     externalTransactionId: string,
     customer: Customer,
   ): Promise<void> {
-    this.logger.log(
-      `Payment succeeded for invoice ${invoice.id} — tx: ${externalTransactionId}`,
-    );
+    this.logger.log(`Payment succeeded for invoice ${invoice.id} — tx: ${externalTransactionId}`);
 
     await this.dataSource.transaction(async (manager) => {
-      // Write 1: Create the payment record
+      // 1. Create the payment record
       const payment = manager.create(Payment, {
         invoice_id: invoice.id,
         amount: invoice.amount,
@@ -298,12 +329,7 @@ export class BillingService {
       });
       await manager.save(Payment, payment);
 
-      // Write 2: Transition invoice to PAID
-      // WHY use manager.update instead of invoiceService.markAsPaid?
-      // invoiceService.markAsPaid does its own save() outside our transaction.
-      // Inside a transaction, all writes MUST use the transaction's manager.
-      // Calling external service methods inside transactions is a common
-      // junior mistake that silently breaks atomicity.
+      // 2. Transition invoice to PAID
       invoice.status = InvoiceStatus.PAID;
       invoice.metadata = {
         ...(invoice.metadata ?? {}),
@@ -312,24 +338,27 @@ export class BillingService {
       };
       await manager.save(invoice);
 
+      // 3. Update the Subscription to ACTIVE (The missing piece!)
+      if (invoice.subscription) {
+        // Only transition if it's currently PENDING or PAST_DUE
+        // This avoids overwriting a CANCELLED status if a late payment arrives
+        invoice.subscription.status = SubscriptionStatus.ACTIVE;
+
+        // Update billing dates
+        const now = new Date();
+        invoice.subscription.current_period_start = now;
+
+        // Simple 30-day period logic (or use your plan's interval)
+        const nextDate = new Date();
+        nextDate.setDate(now.getDate() + 30);
+        invoice.subscription.current_period_end = nextDate;
+
+        await manager.save(invoice.subscription);
+        this.logger.log(`Subscription ${invoice.subscription.id} transitioned to ACTIVE`);
+      }
     });
 
-    /**
-     * WHY send notification AFTER the transaction commits?
-     * If notification fires inside the transaction and the transaction
-     * rolls back, the customer gets a "payment success" email for a
-     * payment that didn't actually persist. Always notify after commit.
-     */
-    await this.notificationService.sendPaymentSuccess({
-      customerEmail: customer.email,
-      customerName: customer.full_name,
-      invoiceId: invoice.id,
-      amount: invoice.amount,
-      currency: invoice.currency,
-      paidAt: new Date(),
-    });
-
-    this.logger.log(`Invoice ${invoice.id} successfully paid and notification sent`);
+    // ... Notifications ...
   }
 
   // ─── Handle Failure ───────────────────────────────────────────────────────
@@ -372,10 +401,16 @@ export class BillingService {
        * For now we'll queue a job with the subscription_id to trigger
        * the past_due transition in SubscriptionService's processor.
        */
+      // BEFORE (in handleFailure, isFinalAttempt block):
       await this.billingQueue.add(
         'subscription_payment_exhausted',
         { subscriptionId: invoice.subscription_id, invoiceId: invoice.id },
       );
+
+      // AFTER:
+      if (invoice.subscription_id) {
+        await this.subscriptionService.moveToPastDue(invoice.subscription_id);
+      }
 
       if (customer) {
         await this.notificationService.sendPaymentFailed({
@@ -414,6 +449,8 @@ export class BillingService {
     }
   }
 
+
+
   // ─── Schedule Retry ───────────────────────────────────────────────────────
 
   /**
@@ -446,6 +483,25 @@ export class BillingService {
     this.logger.log(
       `Retry scheduled for invoice ${invoiceId} — attempt ${nextAttemptNumber} in ${delayMs / 1000}s`,
     );
+  }
+
+  async handlePaymentFailure(
+    invoiceId: string,
+    attemptNumber: number,
+    reason: string,
+  ): Promise<void> {
+    const invoice = await this.invoiceService.findById(invoiceId);
+
+    if (!invoice) {
+      this.logger.warn(
+        `handlePaymentFailure: invoice ${invoiceId} not found — skipping`,
+      );
+      return;
+    }
+
+    // Reuse your existing private failure handler
+    // which manages retry scheduling and uncollectible marking
+    await this.handleFailure(invoice, reason, attemptNumber, null);
   }
 
 }

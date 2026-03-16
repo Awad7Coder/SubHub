@@ -1,9 +1,7 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
-
 import { BillingService } from './billing.service';
-
 import { BILLING_JOBS } from '../subscriptions/subscription.enum';
 import { Customer } from '../customers/entity/customer.entity';
 import { Invoice } from '../invoice/entity/invoice.entity';
@@ -12,6 +10,11 @@ import { BillingProcessor } from './Billing.processor';
 import { NotificationModule } from '../notifications/notifications.module';
 import { InvoiceModule } from '../invoice/invoice.module';
 import { SubscriptionModule } from '../subscriptions/subscriptions.module';
+import { PlansModule } from '../plan/plan.module';
+import { GracefulShutdownService } from './graceful-shutdown.service';
+import { PAYMENT_PROVIDER } from '../payments/providers/payment.provider.interface';
+import { StripeProvider } from '../payments/providers/stripe.provider';
+import { CustomersModule } from '../customers/customers.module';
 
 /**
  * WHY register the queue in BillingModule specifically?
@@ -25,6 +28,7 @@ import { SubscriptionModule } from '../subscriptions/subscriptions.module';
   imports: [
     TypeOrmModule.forFeature([Payment, Invoice, Customer]),
     forwardRef(() => SubscriptionModule),
+    CustomersModule,
     BullModule.registerQueue({
       name: BILLING_JOBS.CHARGE_INVOICE,
       /**
@@ -41,8 +45,12 @@ import { SubscriptionModule } from '../subscriptions/subscriptions.module';
     }),
     InvoiceModule,
     NotificationModule,
+    PlansModule,
   ],
-  providers: [BillingService, BillingProcessor],
+  providers: [BillingService, BillingProcessor, GracefulShutdownService, {
+    provide: PAYMENT_PROVIDER,
+    useClass: StripeProvider,
+  },],
   exports: [BillingService],
 })
-export class BillingModule {}
+export class BillingModule { }

@@ -1,0 +1,93 @@
+version: '3.9'
+
+# ─── SubHub Full Stack ────────────────────────────────────────────────────────
+#
+# Services:
+#   postgres  — primary database
+#   redis     — BullMQ queue backend
+#   app       — NestJS API (production build)
+#
+# Usage:
+#   docker compose up -d                     # start everything
+#   docker compose up -d postgres redis      # infra only (for npm run start:dev)
+#   docker compose logs -f app               # tail app logs
+#   docker compose down -v                   # stop + wipe volumes
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: subhub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-subhub}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-subhub_secret}
+      POSTGRES_DB: ${DB_NAME:-subhub}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-subhub} -d ${DB_NAME:-subhub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: subhub-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secret}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ── NestJS App ──────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: subhub-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-subhub}
+      DB_PASSWORD: ${DB_PASSWORD:-subhub_secret}
+      DB_NAME: ${DB_NAME:-subhub}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secret}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-stripe}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -6,6 +6,13 @@ import {
 } from '@nestjs/common';
 import { InvoiceService } from './invoice.service';
 
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiParam,
+  ApiQuery,
+} from '@nestjs/swagger';
 /**
  * WHY no IdempotencyInterceptor on InvoicesController?
  *
@@ -17,13 +24,19 @@ import { InvoiceService } from './invoice.service';
  * Idempotency protection costs a DB lookup on every request.
  * Don't pay that cost where it provides zero safety benefit.
  */
+
+@ApiTags('invoices')
 @Controller('invoices')
 export class InvoicesController {
-  constructor(private readonly invoiceService: InvoiceService) {}
+  constructor(private readonly invoiceService: InvoiceService) { }
 
   // ── GET /api/invoices/:id ───────────────────────────────────────────────
 
   @Get(':id')
+  @ApiOperation({ summary: 'Get invoice by ID' })
+  @ApiParam({ name: 'id', type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Invoice found' })
+  @ApiResponse({ status: 404, description: 'Invoice not found' })
   async findById(@Param('id', ParseUUIDPipe) id: string) {
     /**
      * WHY not check ownership here (does this invoice belong to the caller)?
@@ -54,6 +67,12 @@ export class InvoicesController {
    * The client asking "what do I owe?" doesn't need all 36.
    */
   @Get('customer/:customerId/open')
+  @ApiOperation({
+    summary: 'Get open (unpaid) invoices for a customer',
+    description: 'Returns all invoices with status=OPEN, ordered oldest first (charge in order).',
+  })
+  @ApiParam({ name: 'customerId', type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Open invoice list (may be empty)' })
   async getOpenInvoices(
     @Param('customerId', ParseUUIDPipe) customerId: string,
   ) {
@@ -67,9 +86,16 @@ export class InvoicesController {
    * Useful for the billing history page — shows all charges over time.
    */
   @Get('subscription/:subscriptionId')
+  @ApiOperation({
+    summary: 'Get all invoices for a subscription',
+    description: 'Returns full billing history, newest first. Bounded by billing cycles — safe to return all.',
+  })
+  @ApiParam({ name: 'subscriptionId', type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Invoice list (may be empty)' })
   async getBySubscription(
     @Param('subscriptionId', ParseUUIDPipe) subscriptionId: string,
   ) {
     return this.invoiceService.getInvoicesBySubscription(subscriptionId);
   }
+
 }

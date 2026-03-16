@@ -1,0 +1,35 @@
+# CI / integration test override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+version: '3.9'
+
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: subhub_test
+    ports:
+      - "5433:5432"   # different port — doesn't clash with local dev DB
+
+  redis:
+    ports:
+      - "6380:6379"   # different port — doesn't clash with local dev Redis
+
+  app:
+    build:
+      target: builder   # use builder stage — has devDependencies for running tests
+    environment:
+      NODE_ENV: test
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: subhub
+      DB_PASSWORD: subhub_secret
+      DB_NAME: subhub_test
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: redis_secret
+      PAYMENT_PROVIDER: mock
+    command: ["npm", "run", "test:integration"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

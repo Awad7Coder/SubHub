@@ -1,12 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { Subscription } from '../subscriptions/entity/subscription.entity';
 import { Customer } from '../customers/entity/customer.entity';
-import { Plan } from '../billing/entity/plan.entity';
+import { Plan } from '../plan/entity/plan.entity';
 import { Invoice } from '../invoice/entity/invoice.entity';
 import { InvoiceStatus } from '../invoice/invoice.enum';
-import { InvoiceService } from '../invoice/invoice.service';
 import { BillingService } from '../billing/billing.service';
 import { NotificationService } from '../notifications/notifications.service';
 import {
@@ -21,14 +20,7 @@ import {
     SubscriptionStatus,
     VALID_SUBSCRIPTION_TRANSITIONS,
 } from './subscription.enum';
-
-// ─── DTOs ──────────────────────────────────────────────────────────────────
-
-export interface CreateSubscriptionDto {
-    customerId: string;
-    planId: string;
-    metadata?: Record<string, any>;
-}
+import { CreateSubscriptionDto } from './dto/subscriptions.dto';
 
 export interface SubscriptionResult {
     subscription: Subscription;
@@ -53,7 +45,6 @@ export class SubscriptionService {
     private readonly logger = new Logger(SubscriptionService.name);
 
     constructor(
-        // ✅ FIX 4: Repository generic now uses the correct entity type
         @InjectRepository(Subscription)
         private readonly subscriptionRepo: Repository<Subscription>,
 
@@ -63,20 +54,18 @@ export class SubscriptionService {
         @InjectRepository(Plan)
         private readonly planRepo: Repository<Plan>,
 
-        private readonly invoiceService: InvoiceService,
+        @Inject(forwardRef(() => BillingService)) 
         private readonly billingService: BillingService,
+
         private readonly notificationService: NotificationService,
         private readonly dataSource: DataSource,
     ) { }
-
-    // ─── Subscribe ────────────────────────────────────────────────────────────
 
     async subscribe(dto: CreateSubscriptionDto): Promise<SubscriptionResult> {
         this.logger.log(
             `Subscribe request: customer ${dto.customerId} → plan ${dto.planId}`,
         );
 
-        // ── GUARDS ────────────────────────────────────────────────────────────
         const customer = await this.customerRepo.findOne({
             where: { id: dto.customerId },
         });
@@ -110,7 +99,6 @@ export class SubscriptionService {
             );
             const periodEnd = periodResult[0].period_end;
 
-            // ✅ FIX 6: manager.create() uses Subscription, not Subscription from rxjs
             const newSubscription = manager.create(Subscription, {
                 customer_id: dto.customerId,
                 plan_id: dto.planId,
@@ -123,9 +111,6 @@ export class SubscriptionService {
 
             subscription = await manager.save(Subscription, newSubscription);
 
-            // ✅ FIX 7: Invoice and InvoiceStatus are now static imports at the top.
-            // No more dynamic import() inside the transaction callback.
-            // This is simpler, faster, and reliable.
             const invoice = manager.create(Invoice, {
                 subscription_id: subscription.id,
                 customer_id: dto.customerId,
@@ -138,7 +123,6 @@ export class SubscriptionService {
             invoiceId = savedInvoice.id;
         });
 
-        // Queue charge AFTER transaction commits — never inside
         await this.billingService.queueCharge(invoiceId);
 
         this.logger.log(
@@ -147,8 +131,6 @@ export class SubscriptionService {
 
         return { subscription, invoiceId };
     }
-
-    // ─── Cancel (Soft) ────────────────────────────────────────────────────────
 
     async cancel(subscriptionId: string): Promise<Subscription> {
         const subscription = await this.findOneOrFail(subscriptionId);
@@ -198,8 +180,6 @@ export class SubscriptionService {
         return updated;
     }
 
-    // ─── Cancel Immediately ───────────────────────────────────────────────────
-
     async cancelImmediately(subscriptionId: string): Promise<Subscription> {
         const subscription = await this.findOneOrFail(subscriptionId);
 
@@ -229,8 +209,6 @@ export class SubscriptionService {
         return updated;
     }
 
-    // ─── Move to Past Due ─────────────────────────────────────────────────────
-
     async moveToPastDue(subscriptionId: string): Promise<Subscription> {
         const subscription = await this.findOneOrFail(subscriptionId);
 
@@ -246,8 +224,6 @@ export class SubscriptionService {
         return updated;
     }
 
-    // ─── Activate After Payment ───────────────────────────────────────────────
-
     async activateAfterPayment(subscriptionId: string): Promise<Subscription> {
         const subscription = await this.findOneOrFail(subscriptionId);
 
@@ -261,8 +237,6 @@ export class SubscriptionService {
         );
         return updated;
     }
-
-    // ─── Renew ────────────────────────────────────────────────────────────────
 
     async renew(subscriptionId: string): Promise<void> {
         const subscription = await this.findOneOrFail(subscriptionId);
@@ -295,13 +269,11 @@ export class SubscriptionService {
             );
             const newPeriodEnd = periodResult[0].period_end;
 
-            // ✅ FIX 9: manager.update uses Subscription, not the rxjs type
             await manager.update(Subscription, subscriptionId, {
                 current_period_start: subscription.current_period_end,
                 current_period_end: newPeriodEnd,
             });
 
-            // ✅ Static imports used here — clean and simple
             const invoice = manager.create(Invoice, {
                 subscription_id: subscriptionId,
                 customer_id: subscription.customer_id,
@@ -386,5 +358,22 @@ export class SubscriptionService {
                 `transition to ${targetStatus}`,
             );
         }
+    }
+
+    /**
+ * Called by WebhooksService when a payment_intent.succeeded webhook
+ * arrives for a subscription that's still PENDING in our DB.
+ * This is the reconciliation path — our DB write failed after Stripe charged.
+ */
+    async activate(subscriptionId: string): Promise<Subscription> {
+        const subscription = await this.findOneOrFail(subscriptionId);
+
+        if (subscription.status === SubscriptionStatus.ACTIVE) {
+            return subscription; // idempotent
+        }
+
+        // Note: activated_at may not exist on your entity yet — see below
+        subscription.status = SubscriptionStatus.ACTIVE;
+        return this.subscriptionRepo.save(subscription);  
     }
 }

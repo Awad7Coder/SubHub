@@ -3,8 +3,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { UsageService } from './usage.service';
 import { UsageLimitGuard } from 'src/common/guards/usageLimit.guard';
-import { Subscription } from 'rxjs';
 import { UsageLog } from './entity/usage-log.entity';
+import { Subscription } from '../subscriptions/entity/subscription.entity';
 
 /**
  * WHY export both UsageService and UsageLimitGuard?

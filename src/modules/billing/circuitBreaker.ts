@@ -88,6 +88,7 @@ export class CircuitBreaker {
    * before we could check the circuit state. The function lets us
    * decide whether to invoke it at all.
    */
+  
   async call<T>(fn: () => Promise<T>): Promise<T> {
     this.evaluateState();
 

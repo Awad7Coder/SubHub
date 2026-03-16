@@ -14,6 +14,7 @@ export enum InvoiceStatus {
   PAID = 'paid',
   VOID = 'void',
   UNCOLLECTIBLE = 'uncollectible',
+  REFUNDED = 'refunded',
 }
 
 /**
@@ -33,7 +34,10 @@ export const VALID_INVOICE_TRANSITIONS: Record<InvoiceStatus, InvoiceStatus[]> =
     InvoiceStatus.VOID,
     InvoiceStatus.UNCOLLECTIBLE,
   ],
-  [InvoiceStatus.PAID]: [],            // terminal state — no exits
-  [InvoiceStatus.VOID]: [],            // terminal state — no exits
-  [InvoiceStatus.UNCOLLECTIBLE]: [],   // terminal state — no exits
+  [InvoiceStatus.PAID]: [
+    InvoiceStatus.REFUNDED,   // ← paid → refunded is valid
+  ],
+  [InvoiceStatus.VOID]: [],
+  [InvoiceStatus.UNCOLLECTIBLE]: [],
+  [InvoiceStatus.REFUNDED]: [],   // terminal — no exits
 };

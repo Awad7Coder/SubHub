@@ -6,9 +6,9 @@ import {
   InvoiceNotFoundException,
   InvalidInvoiceStateException,
 } from '../../common/exceptions/domain.exception';
-import { Subscription } from 'rxjs';
 import { InvoiceStatus, VALID_INVOICE_TRANSITIONS } from './invoice.enum';
 import { Invoice } from './entity/invoice.entity';
+import { Subscription } from '../subscriptions/entity/subscription.entity';
 
 // ─── DTOs ──────────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ export class InvoiceService {
 
     @InjectRepository(Subscription)
     private readonly subscriptionRepo: Repository<Subscription>,
-  ) {}
+  ) { }
 
   // ─── Generate Invoice ────────────────────────────────────────────────────
 
@@ -214,6 +214,26 @@ export class InvoiceService {
     const updated = await this.invoiceRepo.save(invoice);
 
     this.logger.log(`Invoice ${invoiceId} voided — reason: ${reason}`);
+    return updated;
+  }
+
+async markPaid(invoiceId: string, transactionId: string): Promise<Invoice> {
+    // Delegates to existing markAsPaid — same logic, webhook-friendly name
+    return this.markAsPaid(invoiceId, transactionId);
+  }
+
+  async markRefunded(invoiceId: string): Promise<Invoice> {
+    const invoice = await this.findOneOrFail(invoiceId);
+    this.validateTransition(invoice, InvoiceStatus.REFUNDED);
+
+    invoice.status = InvoiceStatus.REFUNDED;
+    invoice.metadata = {
+      ...invoice.metadata,
+      refunded_at: new Date().toISOString(),
+    };
+
+    const updated = await this.invoiceRepo.save(invoice);
+    this.logger.log(`Invoice ${invoiceId} marked as REFUNDED`);
     return updated;
   }
 

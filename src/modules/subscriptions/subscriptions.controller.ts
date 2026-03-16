@@ -19,6 +19,8 @@ import {
   RequiresIdempotencyKey,
 } from '../../common/guards/Idempotency.guard';
 import { SubscriptionService } from './subscriptions.service';
+import { ApiBody, ApiHeader, ApiOperation, ApiParam, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { PaymentThrottle } from 'src/common/decorators/throttle.decorator';
 
 /**
  * WHY @UseInterceptors at the controller level, not globally?
@@ -32,10 +34,11 @@ import { SubscriptionService } from './subscriptions.service';
  * anyway, but it still runs the header check on every request. Keeping
  * it scoped is cleaner and marginally faster.
  */
+@ApiTags('subscriptions')
 @Controller('subscriptions')
 @UseInterceptors(IdempotencyInterceptor)
 export class SubscriptionsController {
-  constructor(private readonly subscriptionService: SubscriptionService) {}
+  constructor(private readonly subscriptionService: SubscriptionService) { }
 
   // ── POST /api/subscriptions ─────────────────────────────────────────────
 
@@ -54,7 +57,37 @@ export class SubscriptionsController {
    * Execution order:
    *   RequiresIdempotencyGuard → IdempotencyInterceptor → subscribe() → cache
    */
+  @PaymentThrottle()
   @Post()
+  @ApiOperation({
+    summary: 'Create subscription',
+    description: `
+Creates a subscription and immediately queues a charge attempt via BullMQ.
+
+**State machine:**
+\`pending\` → charge succeeds → \`active\`
+\`pending\` → charge fails → retry scheduled → (up to 4 attempts) → \`past_due\`
+
+**Idempotency:** Required. Replaying with same key returns cached 201.
+    `,
+  })
+  @ApiHeader({ name: 'Idempotency-Key', required: true, description: 'UUID for deduplication' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['customerId', 'planId'],
+      properties: {
+        customerId: { type: 'string', format: 'uuid', example: 'a1b2c3d4-e5f6-...' },
+        planId: { type: 'string', format: 'uuid', example: 'b2c3d4e5-f6a7-...' },
+        metadata: { type: 'object', example: { source: 'web-signup' } },
+      },
+    },
+  })
+  @ApiResponse({ status: 201, description: 'Subscription created, charge queued' })
+  @ApiResponse({ status: 400, description: 'Missing Idempotency-Key or validation failed' })
+  @ApiResponse({ status: 404, description: 'Customer or plan not found' })
+  @ApiResponse({ status: 409, description: 'Customer already has an active subscription' })
+  @ApiResponse({ status: 403, description: 'Customer or plan is inactive' })
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(RequiresIdempotencyGuard)
   @RequiresIdempotencyKey()
@@ -84,6 +117,10 @@ export class SubscriptionsController {
    * Specific routes ALWAYS go before parameterized routes.
    */
   @Get('active')
+  @ApiOperation({ summary: 'Get active subscription for a customer' })
+  @ApiQuery({ name: 'customerId', required: true, type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Active subscription' })
+  @ApiResponse({ status: 404, description: 'No active subscription found' })
   async getActive(@Query('customerId', ParseUUIDPipe) customerId: string) {
     return this.subscriptionService.getActiveSubscription(customerId);
   }
@@ -101,6 +138,10 @@ export class SubscriptionsController {
    * Cheaper (no DB round-trip) and more precise error message.
    */
   @Get(':id')
+  @ApiOperation({ summary: 'Get subscription by ID' })
+  @ApiParam({ name: 'id', type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Subscription details' })
+  @ApiResponse({ status: 404, description: 'Not found' })
   async findById(@Param('id', ParseUUIDPipe) id: string) {
     return this.subscriptionService.findById(id);
   }
@@ -109,6 +150,13 @@ export class SubscriptionsController {
   // Soft cancel — sets cancel_at_period_end = true
 
   @Delete(':id')
+  @ApiOperation({
+    summary: 'Cancel at period end',
+    description: 'Sets cancel_at_period_end=true. Customer retains access until period ends, then subscription cancels instead of renewing.',
+  })
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  @ApiParam({ name: 'id', type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Cancellation scheduled' })
   @HttpCode(HttpStatus.OK)
   @UseGuards(RequiresIdempotencyGuard)
   @RequiresIdempotencyKey()
@@ -133,6 +181,13 @@ export class SubscriptionsController {
    * The route itself IS the documentation.
    */
   @Delete(':id/now')
+  @ApiOperation({
+    summary: 'Cancel immediately',
+    description: 'Hard cancel — access revoked immediately. No refund is issued automatically.',
+  })
+  @ApiHeader({ name: 'Idempotency-Key', required: true })
+  @ApiParam({ name: 'id', type: String, format: 'uuid' })
+  @ApiResponse({ status: 200, description: 'Subscription cancelled immediately' })
   @HttpCode(HttpStatus.OK)
   @UseGuards(RequiresIdempotencyGuard)
   @RequiresIdempotencyKey()

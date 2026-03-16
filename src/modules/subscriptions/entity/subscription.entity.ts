@@ -1,4 +1,4 @@
-import { Plan } from 'src/modules/billing/entity/plan.entity';
+import { Plan } from 'src/modules/plan/entity/plan.entity';
 import { Customer } from 'src/modules/customers/entity/customer.entity';
 import {
   Entity,

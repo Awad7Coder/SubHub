@@ -214,4 +214,14 @@ export class NotificationService {
      * });
      */
   }
+
+  async sendRefundConfirmation(
+    customerId: string,
+    invoiceId: string,
+    amountRefunded: number,
+  ): Promise<void> {
+    this.logger.log(
+      `Sending refund confirmation — customer: ${customerId}, ` +
+      `invoice: ${invoiceId}, amount: $${amountRefunded.toFixed(2)}`,
+    );}
 }

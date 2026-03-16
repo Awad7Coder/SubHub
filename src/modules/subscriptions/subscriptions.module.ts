@@ -4,11 +4,13 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { SubscriptionService } from './subscriptions.service';
 import { BillingModule } from '../billing/billing.module';
 import { UsageModule } from '../usage/usage.module';
-import { Plan } from '../billing/entity/plan.entity';
+import { Plan } from '../plan/entity/plan.entity';
 import { Customer } from '../customers/entity/customer.entity';
-import { Subscription } from 'rxjs';
 import { InvoiceModule } from '../invoice/invoice.module';
 import { NotificationModule } from '../notifications/notifications.module';
+import { Subscription } from './entity/subscription.entity';
+import { SubscriptionsController } from './subscriptions.controller';
+import { IdempotencyModule } from '../idempotency/idempotency.module';
 
 /**
  * WHY import so many modules here?
@@ -33,7 +35,9 @@ import { NotificationModule } from '../notifications/notifications.module';
     InvoiceModule,
     NotificationModule,
     UsageModule,
+    IdempotencyModule
   ],
+  controllers: [SubscriptionsController],
   providers: [SubscriptionService],
   exports: [SubscriptionService],
 })
